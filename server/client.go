@@ -2980,10 +2980,8 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 		}
 		// FIXME(dlc) - Do L1 cache trick from above.
 		rr := si.acc.sl.Match(to)
-
 		// This gives us a notion that we have interest in this message.
 		didDeliver = len(rr.psubs)+len(rr.qsubs) > 0
-
 		// Check to see if we have no results and this is an internal serviceImport.
 		// If so we need to clean that up.
 		if !didDeliver && si.internal {
