@@ -2851,13 +2851,7 @@ func (c *client) processInboundClientMsg(msg []byte) bool {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		// With JetStream we now have times where we want to match a subsctiption
-		// on one subject, but deliver it with abother. e.g. JetStream deliverables.
-		subj := c.pa.subject
-		if len(c.pa.deliver) > 0 {
-			subj = c.pa.deliver
-		}
-		qnames = c.processMsgResults(c.acc, r, msg, subj, c.pa.reply, flag)
+		qnames = c.processMsgResults(c.acc, r, msg, c.pa.deliver, c.pa.subject, c.pa.reply, flag)
 	}
 
 	// Now deal with gateways
@@ -2911,7 +2905,7 @@ func (c *client) handleGWReplyMap(msg []byte) bool {
 	// Check for leaf nodes
 	if c.srv.gwLeafSubs.Count() > 0 {
 		if r := c.srv.gwLeafSubs.Match(string(c.pa.subject)); len(r.psubs) > 0 {
-			c.processMsgResults(c.acc, r, msg, c.pa.subject, c.pa.reply, pmrNoFlag)
+			c.processMsgResults(c.acc, r, msg, nil, c.pa.subject, c.pa.reply, pmrNoFlag)
 		}
 	}
 	if c.srv.gateway.enabled {
@@ -3000,10 +2994,10 @@ func (c *client) checkForImportServices(acc *Account, msg []byte) bool {
 		// try to send this converted message to all gateways.
 		if c.srv.gateway.enabled {
 			flags |= pmrCollectQueueNames
-			queues := c.processMsgResults(si.acc, rr, msg, []byte(to), nrr, flags)
+			queues := c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
 			didDeliver = c.sendMsgToGateways(si.acc, msg, []byte(to), nrr, queues) || didDeliver
 		} else {
-			c.processMsgResults(si.acc, rr, msg, []byte(to), nrr, flags)
+			c.processMsgResults(si.acc, rr, msg, nil, []byte(to), nrr, flags)
 		}
 
 		shouldRemove := si.ae
@@ -3059,11 +3053,20 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 }
 
 // This processes the sublist results for a given message.
-func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject, reply []byte, flags int) [][]byte {
+func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver, subject, reply []byte, flags int) [][]byte {
+	// With JetStream we now have times where we want to match a subscription
+	// on one subject, but deliver it with another. e.g. JetStream deliverables.
+	// This only works for last mile, meaning to a client. For other types we need
+	// to use the original subject.
+	subj := subject
+	if len(deliver) > 0 {
+		subj = deliver
+	}
+
 	var queues [][]byte
 	// msg header for clients.
 	msgh := c.msgb[1:msgHeadProtoLen]
-	msgh = append(msgh, subject...)
+	msgh = append(msgh, subj...)
 	msgh = append(msgh, ' ')
 	si := len(msgh)
 
@@ -3082,6 +3085,21 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 	// used to create the message header for client connections.
 	if rplyHasGWPrefix = isGWRoutedReply(reply); rplyHasGWPrefix {
 		creply = reply[gwSubjectOffset:]
+	}
+
+	// Check for JetStream encoded reply subjects. For now these will only be on $JS.ACK
+	// prefixed reply subjects.
+	if len(creply) > 0 && c.kind != CLIENT &&
+		c.kind != SYSTEM && c.kind != JETSTREAM &&
+		bytes.HasPrefix(creply, []byte(jetStreamAckPre)) {
+		// We need to rewrite the subject and the reply.
+		if li := bytes.LastIndex(creply, []byte("@")); li != 0 && li < len(creply)-1 {
+			subj, creply = creply[li+1:], creply[:li]
+			msgh = c.msgb[1:msgHeadProtoLen]
+			msgh = append(msgh, subj...)
+			msgh = append(msgh, ' ')
+			si = len(msgh)
+		}
 	}
 
 	// Loop over all normal subscriptions that match.
@@ -3112,13 +3130,13 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, subject,
 			// Redo the subject here on the fly.
 			msgh = c.msgb[1:msgHeadProtoLen]
 			msgh = append(msgh, sub.im.prefix...)
-			msgh = append(msgh, subject...)
+			msgh = append(msgh, subj...)
 			msgh = append(msgh, ' ')
 			si = len(msgh)
 		}
 		// Normal delivery
 		mh := c.msgHeader(msgh[:si], sub, creply)
-		c.deliverMsg(sub, subject, mh, msg, rplyHasGWPrefix)
+		c.deliverMsg(sub, subj, mh, msg, rplyHasGWPrefix)
 	}
 
 	// Set these up to optionally filter based on the queue lists.
@@ -3255,6 +3273,15 @@ sendToRoutesOrLeafs:
 	// If no messages for routes or leafnodes return here.
 	if len(c.in.rts) == 0 {
 		return queues
+	}
+
+	// If we do have a deliver subject we need to do something with it.
+	// Again this is when JetStream (but possibly others) wants the system
+	// to rewrite the delivered subject. The way we will do that is place it
+	// at the end of the reply subject if it exists.
+	if len(deliver) > 0 && len(reply) > 0 {
+		reply = append(reply, '@')
+		reply = append(reply, deliver...)
 	}
 
 	// We address by index to avoid struct copy.
