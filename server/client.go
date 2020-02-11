@@ -3054,22 +3054,6 @@ func (c *client) addSubToRouteTargets(sub *subscription) {
 
 // This processes the sublist results for a given message.
 func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver, subject, reply []byte, flags int) [][]byte {
-	// With JetStream we now have times where we want to match a subscription
-	// on one subject, but deliver it with another. e.g. JetStream deliverables.
-	// This only works for last mile, meaning to a client. For other types we need
-	// to use the original subject.
-	subj := subject
-	if len(deliver) > 0 {
-		subj = deliver
-	}
-
-	var queues [][]byte
-	// msg header for clients.
-	msgh := c.msgb[1:msgHeadProtoLen]
-	msgh = append(msgh, subj...)
-	msgh = append(msgh, ' ')
-	si := len(msgh)
-
 	// For sending messages across routes and leafnodes.
 	// Reset if we have one since we reuse this data structure.
 	if c.in.rts != nil {
@@ -3087,20 +3071,31 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 		creply = reply[gwSubjectOffset:]
 	}
 
-	// Check for JetStream encoded reply subjects. For now these will only be on $JS.ACK
-	// prefixed reply subjects.
+	// With JetStream we now have times where we want to match a subscription
+	// on one subject, but deliver it with another. e.g. JetStream deliverables.
+	// This only works for last mile, meaning to a client. For other types we need
+	// to use the original subject.
+	subj := subject
+	if len(deliver) > 0 {
+		subj = deliver
+	}
+
+	// Check for JetStream encoded reply subjects.
+	// For now these will only be on $JS.ACK prefixed reply subjects.
 	if len(creply) > 0 && c.kind != CLIENT &&
 		c.kind != SYSTEM && c.kind != JETSTREAM &&
 		bytes.HasPrefix(creply, []byte(jetStreamAckPre)) {
 		// We need to rewrite the subject and the reply.
 		if li := bytes.LastIndex(creply, []byte("@")); li != 0 && li < len(creply)-1 {
 			subj, creply = creply[li+1:], creply[:li]
-			msgh = c.msgb[1:msgHeadProtoLen]
-			msgh = append(msgh, subj...)
-			msgh = append(msgh, ' ')
-			si = len(msgh)
 		}
 	}
+
+	// msg header for clients.
+	msgh := c.msgb[1:msgHeadProtoLen]
+	msgh = append(msgh, subj...)
+	msgh = append(msgh, ' ')
+	si := len(msgh)
 
 	// Loop over all normal subscriptions that match.
 	for _, sub := range r.psubs {
@@ -3143,6 +3138,9 @@ func (c *client) processMsgResults(acc *Account, r *SublistResult, msg, deliver,
 	// This is for messages received from routes which will have directed
 	// guidance on which queue groups we should deliver to.
 	qf := c.pa.queues
+
+	// Declared here because of goto.
+	var queues [][]byte
 
 	// For all non-client connections, we may still want to send messages to
 	// leaf nodes or routes even if there are no queue filters since we collect

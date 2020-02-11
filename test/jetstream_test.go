@@ -4164,9 +4164,13 @@ func TestJetStreamTemplateFileStoreRecovery(t *testing.T) {
 // rewritten to match the original subject. NATS routing is all subject based except
 // for the last mile to the client.
 func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
-	sl, opts := runLeafServer()
-	defer sl.Shutdown()
+	ca := createClusterWithName(t, "A", 1)
+	defer shutdownCluster(ca)
+	cb := createClusterWithName(t, "B", 1, ca)
+	defer shutdownCluster(cb)
 
+	// Connect our leafnode server to cluster B.
+	opts := cb.opts[rand.Intn(len(cb.opts))]
 	s, _ := runSolicitLeafServer(opts)
 	defer s.Shutdown()
 
@@ -4190,13 +4194,17 @@ func TestJetStreamSingleInstanceRemoteAccess(t *testing.T) {
 		sendStreamMsg(t, nc, "foo", "Hello World!")
 	}
 
-	// Now create a push based consumer. Connected to the non-jetstream server.
+	// Now create a push based consumer. Connected to the non-jetstream server via a random server on cluster A.
+	sl := ca.servers[rand.Intn(len(ca.servers))]
 	nc2 := clientConnectToServer(t, sl)
 	defer nc2.Close()
 
 	sub, _ := nc2.SubscribeSync(nats.NewInbox())
 	defer sub.Unsubscribe()
+
+	// Need to wait for interest to propagate across GW.
 	nc2.Flush()
+	time.Sleep(25 * time.Millisecond)
 
 	o, err := mset.AddConsumer(&server.ConsumerConfig{Delivery: sub.Subject, DeliverAll: true})
 	if err != nil {
