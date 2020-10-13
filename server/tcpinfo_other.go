@@ -45,4 +45,6 @@ func NewTCPInfoExpMaps() *TCPInfoExpMaps {
 	return &TCPInfoExpMaps{}
 }
 
+func (d *TCPDiagnostics) LogInteresting(log Logger, fullLabel string, previous *TCPInfoExpMetrics) {}
+
 // There will be other functions here, as we populate maps.

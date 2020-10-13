@@ -4521,6 +4521,8 @@ func (c *client) diagnosticsLoop() {
 			}
 			return
 		}
+		// Log before populate, so that the previous metrics are available.
+		(&c.diagTCPData).LogInteresting(c, routeID, &c.diagMetrics)
 		(&c.diagMetrics).PopulateFromTCPDiagnostics(&c.diagTCPData, expvarMaps, routeID)
 		c.mu.Unlock()
 	}
@@ -4554,4 +4556,9 @@ func (c *client) Tracef(format string, v ...interface{}) {
 func (c *client) Warnf(format string, v ...interface{}) {
 	format = fmt.Sprintf("%s - %s", c, format)
 	c.srv.Warnf(format, v...)
+}
+
+func (c *client) Fatalf(format string, v ...interface{}) {
+	format = fmt.Sprintf("%s - %s", c, format)
+	c.srv.Fatalf(format, v...)
 }

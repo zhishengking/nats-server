@@ -170,3 +170,20 @@ func populateExpvarMapsTCPDiagnostics(maps *TCPInfoExpMaps, fullLabel string, me
 		vm.Field(i).Interface().(*expvar.Map).Set(fullLabel, vmetrics.FieldByName(tm.Field(i).Name))
 	}
 }
+
+func (d *TCPDiagnostics) LogInteresting(log Logger, fullLabel string, previous *TCPInfoExpMetrics) {
+	if int64(d.Info.Pmtu) != previous.PathMTU.Value() {
+		log.Noticef("[SOCKET-DIAGNOSTICS] %q: Path MTU change: was %v now %v",
+			fullLabel, previous.PathMTU.Value(), d.Info.Pmtu)
+	}
+	if int64(d.Info.Lost) != previous.LostPackets.Value() {
+		v := previous.LostPackets.Value()
+		log.Warnf("[SOCKET-DIAGNOSTICS] %q: LOST PACKETS: was %v now %v INCREASE: %v",
+			fullLabel, v, int64(d.Info.Lost), v-int64(d.Info.Lost))
+	}
+	if int64(d.Info.Total_retrans) != previous.TotalRetransPackets.Value() {
+		v := previous.TotalRetransPackets.Value()
+		log.Warnf("[SOCKET-DIAGNOSTICS] %q: total retransmission increase: was %v now %v INCREASE: %v",
+			fullLabel, v, int64(d.Info.Total_retrans), v-int64(d.Info.Total_retrans))
+	}
+}
