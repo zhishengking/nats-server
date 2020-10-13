@@ -224,6 +224,9 @@ type Server struct {
 
 	// exporting account name the importer experienced issues with
 	incompleteAccExporterMap sync.Map
+
+	// Diagnostic metrics maps
+	diagnosticExpvarMaps *TCPInfoExpMaps
 }
 
 // Make sure all are 64bits for atomic use
@@ -295,18 +298,19 @@ func NewServer(opts *Options) (*Server, error) {
 	now := time.Now()
 
 	s := &Server{
-		kp:           kp,
-		configFile:   opts.ConfigFile,
-		info:         info,
-		prand:        rand.New(rand.NewSource(time.Now().UnixNano())),
-		opts:         opts,
-		done:         make(chan bool, 1),
-		start:        now,
-		configTime:   now,
-		gwLeafSubs:   NewSublistWithCache(),
-		httpBasePath: httpBasePath,
-		eventIds:     nuid.New(),
-		routesToSelf: make(map[string]struct{}),
+		kp:                   kp,
+		configFile:           opts.ConfigFile,
+		info:                 info,
+		prand:                rand.New(rand.NewSource(time.Now().UnixNano())),
+		opts:                 opts,
+		done:                 make(chan bool, 1),
+		start:                now,
+		configTime:           now,
+		gwLeafSubs:           NewSublistWithCache(),
+		httpBasePath:         httpBasePath,
+		eventIds:             nuid.New(),
+		routesToSelf:         make(map[string]struct{}),
+		diagnosticExpvarMaps: NewTCPInfoExpMaps(),
 	}
 
 	// Trusted root operator keys.

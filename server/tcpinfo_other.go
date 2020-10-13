@@ -25,6 +25,7 @@ import (
 type TCPInfo struct{}
 type TCPDiagnostics struct{}
 type TCPInfoExpMetrics struct{}
+type TCPInfoExpMaps struct{}
 
 var ErrNotSupported = errors.New("error: operation not supported on this platform")
 
@@ -37,6 +38,11 @@ func GetSocketTCPDiagnostics(conn *net.TCPConn, diag *TCPDiagnostics) error {
 	return ErrNotImplemented
 }
 
-func (m *TCPInfoExpMetrics) PopulateFromTCPDiagnostics(d *TCPDiagnostics) {}
+func (m *TCPInfoExpMetrics) PopulateFromTCPDiagnostics(d *TCPDiagnostics, maps *TCPInfoExpMaps, fullLabel string) {
+}
+
+func NewTCPInfoExpMaps() *TCPInfoExpMaps {
+	return &TCPInfoExpMaps{}
+}
 
 // There will be other functions here, as we populate maps.

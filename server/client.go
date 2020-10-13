@@ -4503,6 +4503,8 @@ func (c *client) diagnosticsLoop() {
 		c.mu.Unlock()
 		return
 	}
+	expvarMaps := s.diagnosticExpvarMaps
+	routeID := c.route.remoteID
 	c.mu.Unlock()
 	var err error
 	for {
@@ -4519,7 +4521,7 @@ func (c *client) diagnosticsLoop() {
 			}
 			return
 		}
-		(&c.diagMetrics).PopulateFromTCPDiagnostics(&c.diagTCPData)
+		(&c.diagMetrics).PopulateFromTCPDiagnostics(&c.diagTCPData, expvarMaps, routeID)
 		c.mu.Unlock()
 	}
 }

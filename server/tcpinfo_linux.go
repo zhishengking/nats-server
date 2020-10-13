@@ -17,6 +17,7 @@ import (
 	"expvar"
 	"fmt"
 	"net"
+	"reflect"
 	"syscall"
 	"unsafe"
 
@@ -106,7 +107,44 @@ type TCPInfoExpMetrics struct {
 	RTTVariance         expvar.Int
 }
 
-func (m *TCPInfoExpMetrics) PopulateFromTCPDiagnostics(d *TCPDiagnostics) {
+type TCPInfoExpMaps struct {
+	UnreadData          *expvar.Map
+	UnsentData          *expvar.Map
+	UnAckedPackets      *expvar.Map
+	LostPackets         *expvar.Map
+	RetransOutPackets   *expvar.Map
+	TotalRetransPackets *expvar.Map
+	PathMTU             *expvar.Map
+	LastDataSentMSec    *expvar.Map
+	LastDataRecvMSec    *expvar.Map
+	RTT                 *expvar.Map
+	RTTVariance         *expvar.Map
+}
+
+// Reflection note: we're using reflection once at startup, for maps
+// population, and once each time a new ID for a client is seen (eg, new
+// gateway), not on reconnect, so this should be rare enough that Reflection
+// should be better than repeating all those field-names yet another time.  I
+// could possibly construct TCPInfoExpMaps dynamically but ... let's not go
+// down that hole.
+
+// NewTCPInfoExpMaps should only be called once in a given process.
+func NewTCPInfoExpMaps() *TCPInfoExpMaps {
+	all := TCPInfoExpMaps{}
+	t := reflect.TypeOf(&all).Elem()
+	v := reflect.ValueOf(&all).Elem()
+	for i := 0; i < t.NumField(); i++ {
+		m := expvar.NewMap(t.Field(i).Name)
+		v.Field(i).Set(reflect.ValueOf(m))
+	}
+	return &all
+}
+
+func (m *TCPInfoExpMetrics) PopulateFromTCPDiagnostics(d *TCPDiagnostics, maps *TCPInfoExpMaps, fullLabel string) {
+	// Might need to switch the label to be sanitized; we'll see.
+	if v := maps.UnreadData.Get(fullLabel); v == nil {
+		populateExpvarMapsTCPDiagnostics(maps, fullLabel, m)
+	}
 	m.UnreadData.Set(int64(d.UnreadData))
 	m.UnsentData.Set(int64(d.UnsentData))
 	m.UnAckedPackets.Set(int64(d.Info.Unacked))
@@ -118,4 +156,17 @@ func (m *TCPInfoExpMetrics) PopulateFromTCPDiagnostics(d *TCPDiagnostics) {
 	m.LastDataRecvMSec.Set(int64(d.Info.Last_data_recv))
 	m.RTT.Set(int64(d.Info.Rtt))
 	m.RTTVariance.Set(int64(d.Info.Rttvar))
+}
+
+// Theoretically this could race against itself, but it would require two
+// callers for a given fullLabel, in different go-routines, so I'm skipping
+// that guard (to avoid complicating the reflect iteration with handling an
+// exception for a mutex, or moving the maps into a sub-struct).
+func populateExpvarMapsTCPDiagnostics(maps *TCPInfoExpMaps, fullLabel string, metrics *TCPInfoExpMetrics) {
+	tm := reflect.TypeOf(maps).Elem()
+	vm := reflect.ValueOf(maps).Elem()
+	vmetrics := reflect.ValueOf(metrics)
+	for i := 0; i < vm.NumField(); i++ {
+		vm.Field(i).Interface().(*expvar.Map).Set(fullLabel, vmetrics.FieldByName(tm.Field(i).Name))
+	}
 }
