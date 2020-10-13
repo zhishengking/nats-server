@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -65,6 +66,10 @@ const (
 	pongProto = "PONG" + _CRLF_
 	errProto  = "-ERR '%s'" + _CRLF_
 	okProto   = "+OK" + _CRLF_
+)
+
+const (
+	diagnosticsInterval = 5 * time.Second
 )
 
 func init() {
@@ -212,6 +217,7 @@ type client struct {
 	nonce      []byte
 	pubKey     string
 	nc         net.Conn
+	diagConn   *net.TCPConn
 	ncs        atomic.Value
 	out        outbound
 	user       *NkeyUser
@@ -245,6 +251,13 @@ type client struct {
 
 	trace bool
 	echo  bool
+
+	// This is not supported on all platforms; on those, the bool will never be
+	// true and the TCPInfo will deteriorate to struct{}.
+	// Where it is supported, TCPInfo is roughly 1/4 kB.
+	diagConnUsable bool
+	diagTCPData    TCPDiagnostics
+	diagMetrics    TCPInfoExpMetrics
 }
 
 type rrTracking struct {
@@ -1094,7 +1107,7 @@ func (c *client) readLoop(pre []byte) {
 
 // Returns the appropriate closed state for a given read error.
 func closedStateForErr(err error) ClosedState {
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return ClientClosed
 	}
 	return ReadError
@@ -4477,6 +4490,38 @@ func (c *client) connectionTypeAllowed(acts map[string]struct{}) bool {
 // flag have been set, or if `nc` is nil, which may happen in tests.
 func (c *client) isClosed() bool {
 	return c.flags.isSet(closeConnection) || c.flags.isSet(connMarkedClosed) || c.nc == nil
+}
+
+// diagnosticsLoop reports statistics on the client connection.
+// Runs in its own Go routine.
+func (c *client) diagnosticsLoop() {
+	// House-keeping for the server's tracking of extant go-routines.
+	c.mu.Lock()
+	s := c.srv
+	defer s.grWG.Done()
+	if c.isClosed() {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+	var err error
+	for {
+		time.Sleep(diagnosticsInterval)
+		c.mu.Lock()
+		err = GetSocketTCPDiagnostics(c.diagConn, &c.diagTCPData)
+		if err != nil {
+			c.mu.Unlock()
+			if closedStateForErr(err) == ClientClosed {
+				c.Debugf("diagnostics loop shutting down on client closed")
+			} else {
+				// FIXME: do we really want to exit for non-closed errors?  TBD.
+				c.Errorf("diagnostics loop exiting: %v", err)
+			}
+			return
+		}
+		(&c.diagMetrics).PopulateFromTCPDiagnostics(&c.diagTCPData)
+		c.mu.Unlock()
+	}
 }
 
 // Logging functionality scoped to a client or route.

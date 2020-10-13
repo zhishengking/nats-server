@@ -679,6 +679,11 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 	now := time.Now()
 	c := &client{srv: s, nc: conn, start: now, last: now, kind: GATEWAY}
 
+	// Stash raw connection required for getting socket diagnostics
+	if PlatformCanGetSocketTCPInfo {
+		c.diagConn, c.diagConnUsable = conn.(*net.TCPConn)
+	}
+
 	// Are we creating the gateway based on the configuration
 	solicit := cfg != nil
 	var tlsRequired bool
@@ -812,6 +817,11 @@ func (s *Server) createGateway(cfg *gatewayCfg, url *url.URL, conn net.Conn) {
 
 	// Spin up the write loop.
 	s.startGoRoutine(func() { c.writeLoop() })
+
+	// Start up diagnostics.
+	if c.diagConnUsable {
+		s.startGoRoutine(func() { c.diagnosticsLoop() })
+	}
 
 	if tlsRequired {
 		c.Debugf("TLS handshake complete")
