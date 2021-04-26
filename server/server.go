@@ -250,6 +250,9 @@ type Server struct {
 	// For out of resources to not log errors too fast.
 	rerrMu   sync.Mutex
 	rerrLast time.Time
+
+	// stateDir used for caching things like OCSP staples.
+	stateDir string
 }
 
 type nodeInfo struct {
@@ -1478,6 +1481,16 @@ func (s *Server) Start() {
 
 	if opts.ConfigFile != _EMPTY_ {
 		s.Noticef("Using configuration file: %s", opts.ConfigFile)
+	}
+
+	// Check if need to get staples.
+	if opts.OCSPConfig != nil {
+		s.Noticef("OCSP Stapling Configuration: must_staple=%v", opts.OCSPConfig.MustStaple)
+		err := s.fetchOCSPStaples(opts.TLSConfig)
+		if err != nil {
+			s.Fatalf("Error getting OCSP staples: %v", err)
+			return
+		}
 	}
 
 	hasOperators := len(opts.TrustedOperators) > 0

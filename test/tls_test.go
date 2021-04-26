@@ -15,6 +15,7 @@ package test
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/crypto/ocsp"
 )
 
 var noOpErrHandler = func(_ *nats.Conn, _ *nats.Subscription, _ error) {}
@@ -1906,6 +1908,109 @@ func TestTLSClientSVIDAuth(t *testing.T) {
 			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
 				test.certs,
 				nats.RootCAs("./configs/certs/svid/ca.pem"),
+				nats.ErrorHandler(noOpErrHandler),
+			)
+			if test.err == nil && err != nil {
+				t.Errorf("Expected to connect, got %v", err)
+			} else if test.err != nil && err == nil {
+				t.Errorf("Expected error on connect")
+			} else if test.err != nil && err != nil {
+				// Error on connect was expected
+				if test.err.Error() != err.Error() {
+					t.Errorf("Expected error %s, got: %s", test.err, err)
+				}
+				return
+			}
+			defer nc.Close()
+
+			nc.Subscribe("ping", func(m *nats.Msg) {
+				m.Respond([]byte("pong"))
+			})
+			nc.Flush()
+
+			_, err = nc.Request("ping", []byte("ping"), 250*time.Millisecond)
+			if test.rerr != nil && err == nil {
+				t.Errorf("Expected error getting response")
+			} else if test.rerr == nil && err != nil {
+				t.Errorf("Expected response")
+			}
+		})
+	}
+}
+
+func TestTLSClientOCSP(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start mock HTTP responder service.
+	s := newOCSPResponder(t, "configs/certs/ocsp/ca-cert.pem", "configs/certs/ocsp/ca-key.pem")
+	defer s.Shutdown(ctx)
+
+	// Give it some time for the HTTP server to start.
+	time.Sleep(2 * time.Second)
+
+	setCertStatus := func(t *testing.T, cert string, ocspStatus int) {
+		setOCSPDatabase(t,
+			fmt.Sprintf("http://%s", s.Addr),
+			cert,
+			ocspStatus,
+		)
+	}
+
+	for _, test := range []struct {
+		name      string
+		config    string
+		certs     nats.Option
+		err       error
+		rerr      error
+		configure func()
+	}{
+		{
+			"connect with tls and get a staple from valid certificate",
+			`
+				port: -1
+				%s
+			`,
+			nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+			nil,
+			nil,
+			func() { setCertStatus(t, "configs/certs/ocsp/server-cert.pem", ocsp.Good) },
+		},
+		// FIXME: Test that the server will not start with an invalid cert.
+		// {
+		// 	"connect with tls and get a staple from invalid certificate",
+		// 	`
+		// 		port: -1
+		// 		%s
+		// 	`,
+		// 	nats.ClientCert("./configs/certs/ocsp/client-cert.pem", "./configs/certs/ocsp/client-key.pem"),
+		// 	nil,
+		// 	nil,
+		// 	func() { setCertStatus(t, "configs/certs/ocsp/server-cert.pem", ocsp.Revoked) },
+		// },
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.configure()
+
+			content := fmt.Sprintf(test.config, `
+				tls {
+					cert_file: "configs/certs/ocsp/server-cert.pem"
+					key_file: "configs/certs/ocsp/server-key.pem"
+					ca_file: "configs/certs/ocsp/ca-cert.pem"
+					timeout: 5
+
+					# Makes the server honor must-staple flag if present in server cert.
+					ocsp: true
+				}
+			`)
+			conf := createConfFile(t, []byte(content))
+			defer removeFile(t, conf)
+			s, opts := RunServerWithConfig(conf)
+			defer s.Shutdown()
+
+			nc, err := nats.Connect(fmt.Sprintf("tls://localhost:%d", opts.Port),
+				test.certs,
+				nats.RootCAs("configs/certs/ocsp/ca-cert.pem"),
 				nats.ErrorHandler(noOpErrHandler),
 			)
 			if test.err == nil && err != nil {

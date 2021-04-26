@@ -15,15 +15,20 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"golang.org/x/crypto/ocsp"
 	"io"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -1643,6 +1648,107 @@ func computeRTT(start time.Time) time.Duration {
 		rtt = time.Nanosecond
 	}
 	return rtt
+}
+
+func (srv *Server) fetchOCSPStaples(tlsConfig *tls.Config) error {
+	opts := srv.getOpts()
+
+	// FIXME: Need to do this for all types of connections.
+	// FIXME: Add option for the state directory.
+	dir, err := ioutil.TempDir("", "nats-staples-")
+	if err != nil {
+		return err
+	}
+	srv.stateDir = dir
+
+	// Parse and decode CA certificate to verify OCSP signatures.
+	caCert := opts.OCSPConfig.CaFile
+	data, err := ioutil.ReadFile(caCert)
+	if err != nil {
+		return err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return fmt.Errorf("Error decoding CA certificate")
+	}
+	issuer, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return err
+	}
+	if !issuer.IsCA {
+		return fmt.Errorf("Invalid CA certificate: %s", caCert)
+	}
+
+	for _, cert := range tlsConfig.Certificates {
+		leaf := cert.Leaf
+
+		// Take the URL.
+		ocspServer := leaf.OCSPServer[0]
+		if ocspServer == "" {
+			return fmt.Errorf("Missing OCSP Url in certificate")
+		}
+		ocspRequest, err := ocsp.CreateRequest(leaf, issuer, nil)
+		if err != nil {
+			return err
+		}
+		ocspRequestReader := bytes.NewReader(ocspRequest)
+		resp, err := http.Post(ocspServer, "application/ocsp-request", ocspRequestReader)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		ocspResponseBytes, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		ocspResponse, err := ocsp.ParseResponse(ocspResponseBytes, issuer)
+		if err != nil {
+			return err
+		}
+		switch ocspResponse.Status {
+		case ocsp.Good:
+			// Store the certificate that can be served to the user on connect.
+			sha := sha256.New()
+			sha.Write(leaf.Raw)
+			digest := fmt.Sprintf("%x", sha.Sum(nil))
+			stapleFile := filepath.Join(dir, digest)
+			srv.Debugf("Storing OCSP staple at %s", stapleFile)
+			err := ioutil.WriteFile(stapleFile, ocspResponseBytes, 0644)
+			if err != nil {
+				return fmt.Errorf("Error storing OCSP staple: %s", err)
+			}
+		case ocsp.Revoked:
+			return fmt.Errorf("Error fetching OCSP staples, certificate is revoked")
+		default:
+			// FIXME: Handle unknown state certificates.
+			continue
+		}
+	}
+
+	// Setup the callback to server the staples to the user.
+	tlsConfig.GetCertificate = func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		// TODO: Multi cert?
+		// TODO: Race condition
+		for _, cert := range tlsConfig.Certificates {
+			leaf := cert.Leaf
+			sha := sha256.New()
+			sha.Write(leaf.Raw)
+			digest := fmt.Sprintf("%x", sha.Sum(nil))
+			stapleFile := filepath.Join(dir, digest)
+			data, err := ioutil.ReadFile(stapleFile)
+			if err != nil {
+				return nil, err
+			}
+			cert.OCSPStaple = data
+
+			// Return the first cert.
+			return &cert, nil
+		}
+		return nil, fmt.Errorf("No certs")
+	}
+
+	return nil
 }
 
 // processConnect will process a client connect op.

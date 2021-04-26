@@ -225,6 +225,7 @@ type Options struct {
 	TLSKey                string        `json:"-"`
 	TLSCaCert             string        `json:"-"`
 	TLSConfig             *tls.Config   `json:"-"`
+	OCSPConfig            *OCSPConfig   `json:"-"`
 	AllowNonTLS           bool          `json:"-"`
 	WriteDeadline         time.Duration `json:"-"`
 	MaxClosedClients      int           `json:"-"`
@@ -469,6 +470,13 @@ type TLSConfigOpts struct {
 	Timeout           float64
 	Ciphers           []uint16
 	CurvePreferences  []tls.CurveID
+	OCSP              *OCSPConfig
+}
+
+// OCSPConfig represents the options of OCSP stapling options.
+type OCSPConfig struct {
+	MustStaple bool
+	CaFile     string
 }
 
 var tlsUsage = `
@@ -827,6 +835,12 @@ func (o *Options) processConfigFileLine(k string, v interface{}, errors *[]error
 		o.TLSTimeout = tc.Timeout
 		o.TLSMap = tc.Map
 
+		// TODO: Make this DRY for leafnode, gateway, routes, websockets, mqtt...
+		o.OCSPConfig = tc.OCSP
+		if o.OCSPConfig != nil {
+			// Need to keep state of the CA directory to verify OCSP signatures.
+			o.OCSPConfig.CaFile = tc.CaFile
+		}
 	case "allow_non_tls":
 		o.AllowNonTLS = v.(bool)
 	case "write_deadline":
@@ -3432,6 +3446,13 @@ func parseTLS(v interface{}, isClientCtx bool) (t *TLSConfigOpts, retErr error) 
 				at = mv
 			}
 			tc.Timeout = at
+		case "ocsp":
+			switch v := mv.(type) {
+			case bool:
+				tc.OCSP = &OCSPConfig{MustStaple: v}
+			default:
+				return nil, &configErr{tk, fmt.Sprintf("error parsing ocsp config: unsupported type %T", v)}
+			}
 		default:
 			return nil, &configErr{tk, fmt.Sprintf("error parsing tls config, unknown field [%q]", mk)}
 		}
@@ -3732,7 +3753,6 @@ func GenTLSConfig(tc *TLSConfigOpts) (*tls.Config, error) {
 		}
 		config.ClientCAs = pool
 	}
-
 	return &config, nil
 }
 
