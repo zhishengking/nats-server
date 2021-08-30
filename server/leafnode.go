@@ -65,6 +65,8 @@ type leaf struct {
 	remoteCluster string
 	// remoteServer holds onto the remove server's name or ID.
 	remoteServer string
+	// remoteId holds the remote server's ID.
+	remoteId string
 	// Used to suppress sub and unsub interest. Same as routes but our audience
 	// here is tied to this leaf node. This will hold all subscriptions except this
 	// leaf nodes. This represents all the interest we want to send to the other side.
@@ -1048,6 +1050,9 @@ func (c *client) processLeafnodeInfo(info *Info) {
 		} else {
 			c.leaf.remoteServer = info.Name
 		}
+		if info.ID != _EMPTY_ {
+			c.leaf.remoteId = info.ID
+		}
 
 		// Check for JetStream semantics to deny the JetStream API as needed.
 		// This is so that if JetStream is enabled on both sides we can separately address both.
@@ -1382,6 +1387,7 @@ func (c *client) processLeafNodeConnect(s *Server, arg []byte, lang string) erro
 
 	// Remember the remote server.
 	c.leaf.remoteServer = proto.Name
+	c.leaf.remoteId = proto.ID
 
 	// If the other side has declared itself a hub, so we will take on the spoke role.
 	if proto.Hub {
@@ -2139,7 +2145,7 @@ func (c *client) processLeafMsgArgs(arg []byte) error {
 }
 
 // processInboundLeafMsg is called to process an inbound msg from a leaf node.
-func (c *client) processInboundLeafMsg(msg []byte) {
+func (c *client) processInboundLeafMsg(msg []byte, tCtx *traceCtx) {
 	// Update statistics
 	// The msg includes the CR_LF, so pull back out for accounting.
 	c.in.msgs++
@@ -2182,6 +2188,8 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 		}
 	}
 
+	msg = tCtx.traceMsg(msg, string(c.pa.subject), string(c.pa.reply), c, acc)
+
 	// Collect queue names if needed.
 	var qnames [][]byte
 
@@ -2197,13 +2205,15 @@ func (c *client) processInboundLeafMsg(msg []byte) {
 			atomic.LoadInt64(&c.srv.gateway.totalQSubs) > 0 {
 			flag |= pmrCollectQueueNames
 		}
-		_, qnames = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flag)
+		_, qnames = c.processMsgResults(acc, r, msg, nil, c.pa.subject, c.pa.reply, flag, tCtx)
 	}
 
 	// Now deal with gateways
 	if c.srv.gateway.enabled {
-		c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, qnames)
+		c.sendMsgToGateways(acc, msg, c.pa.subject, c.pa.reply, qnames, tCtx)
 	}
+
+	tCtx.traceMsgCompletion(true)
 }
 
 // Handles a subscription permission violation.

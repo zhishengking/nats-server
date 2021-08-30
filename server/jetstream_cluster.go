@@ -1483,6 +1483,12 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 	restoreDoneCh := make(<-chan error)
 	isRecovering := true
 
+	name := "monitor"
+	if mset != nil {
+		name = fmt.Sprintf("%s:%s", name, mset.name())
+	}
+	tCtx := newTraceCtx(name, s)
+
 	for {
 		select {
 		case <-s.quitCh:
@@ -1500,7 +1506,8 @@ func (js *jetStream) monitorStream(mset *stream, sa *streamAssignment) {
 				continue
 			}
 			// Apply our entries.
-			if err := js.applyStreamEntries(mset, ce, isRecovering); err == nil {
+			// TODO mset may be nil see doSnapshot(). applyStreamEntries is sensitive to this.
+			if err := js.applyStreamEntries(mset, ce, isRecovering, tCtx); err == nil {
 				ne, nb := n.Applied(ce.Index)
 				// If we have at least min entries to compact, go ahead and snapshot/compact.
 				if ne >= compactNumMin || nb > compactSizeMin {
@@ -1706,7 +1713,9 @@ func isControlHdr(hdr []byte) bool {
 }
 
 // Apply our stream entries.
-func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool) error {
+func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isRecovering bool, tCtx *traceCtx) error {
+	// complete message entries come from, then process entries independently
+	defer tCtx.traceMsgCompletion(true)
 	for _, e := range ce.Entries {
 		if e.Type == EntryNormal {
 			buf := e.Data
@@ -1758,7 +1767,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 				}
 
 				// Process the actual message here.
-				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts); err != nil {
+				if err := mset.processJetStreamMsg(subject, reply, hdr, msg, lseq, ts, tCtx); err != nil {
 					// Only return in place if we are going to reset stream or we are out of space.
 					if isClusterResetErr(err) || isOutOfSpaceErr(err) {
 						return err
@@ -1877,6 +1886,7 @@ func (js *jetStream) applyStreamEntries(mset *stream, ce *CommittedEntry, isReco
 			}
 			return nil
 		}
+		tCtx.traceMsgCompletion(true)
 	}
 	return nil
 }
@@ -3950,7 +3960,7 @@ func (s *Server) jsClusteredStreamListRequest(acc *Account, ci *ClientInfo, filt
 	rc := make(chan *StreamInfo, len(streams))
 
 	// Store our handler.
-	s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
+	s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte, _ *traceCtx) {
 		var si StreamInfo
 		if err := json.Unmarshal(msg, &si); err != nil {
 			s.Warnf("Error unmarshaling clustered stream info response:%v", err)
@@ -4089,7 +4099,7 @@ func (s *Server) jsClusteredConsumerListRequest(acc *Account, ci *ClientInfo, of
 	rc := make(chan *ConsumerInfo, len(consumers))
 
 	// Store our handler.
-	s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte) {
+	s.sys.replies[inbox] = func(sub *subscription, _ *client, _ *Account, subject, _ string, msg []byte, _ *traceCtx) {
 		var ci ConsumerInfo
 		if err := json.Unmarshal(msg, &ci); err != nil {
 			s.Warnf("Error unmarshaling clustered consumer info response:%v", err)
