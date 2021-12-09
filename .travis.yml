@@ -19,7 +19,7 @@ go_import_path: github.com/nats-io/nats-server
 install:
 - go install honnef.co/go/tools/cmd/staticcheck@latest
 - go install github.com/client9/misspell/cmd/misspell@latest
-- if [[ $TRAVIS_TAG ]]; then go install github.com/goreleaser/goreleaser@latest; fi
+- if [[ ! $TRAVIS_TAG ]]; then go install github.com/goreleaser/goreleaser@latest; fi
 before_script:
 - GO_LIST=$(go list ./...)
 - go build
@@ -29,17 +29,18 @@ before_script:
 - staticcheck $GO_LIST
 script:
 - set -e
-- if [[ $TRAVIS_TAG ]]; then go test -v -run=TestVersionMatchesTag ./server; fi
-- if [[ ! $TRAVIS_TAG ]]; then go test -v -run=TestNoRace --failfast -p=1 -timeout 20m ./...; fi
-- if [[ ! $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast -timeout 20m ./...; fi; fi
+- if [[ ! $TRAVIS_TAG ]]; then go test -v -run=TestVersionMatchesTag ./server; fi
+- if [[ $TRAVIS_TAG ]]; then go test -v -run=TestNoRace --failfast -p=1 -timeout 20m ./...; fi
+- if [[ $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then ./scripts/cov.sh TRAVIS; else go test -v -race -p=1 --failfast -timeout 20m ./...; fi; fi
 - set +e
 after_success:
-- if [[ ! $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then $HOME/gopath/bin/goveralls -coverprofile=acc.out -service travis-ci; fi; fi
+- if [[ $TRAVIS_TAG ]]; then if [[ "$TRAVIS_GO_VERSION" =~ 1.16 ]]; then $HOME/gopath/bin/goveralls -coverprofile=acc.out -service travis-ci; fi; fi
 
 deploy:
   provider: script
   cleanup: true
-  script: goreleaser
+  script: goreleaser --skip-publish
   on:
-    tags: true
-    condition: $TRAVIS_GO_VERSION =~ 1.16
+    tags: false
+    branch: test_go_1_17_release
+    condition: $TRAVIS_GO_VERSION =~ 1.17
